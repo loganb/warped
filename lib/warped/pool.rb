@@ -5,9 +5,13 @@ module Warped
     #A sentinel value for when a worker has no result
     EMPTY = Object.new
     
-    def initialize
-      @threads = [] #Protected by @lock
-      @results = []
+    #
+    # Takes a block that the workers execute
+    #
+    def initialize(&block)
+      @threads = [] #Protected by @lock, list of available threads
+      @results = [] #List of available results
+      @block   = block #Block to execute work
       
       @lock = Mutex.new
       @cv   = ConditionVariable.new #Signalled when a thread is returned
@@ -16,23 +20,25 @@ module Warped
     #
     # Execute the block in the thread pool
     #
-    def submit(&block)
+    def submit(*args)
       t = nil
-      while(t = @lock.synchronize { @threads.pop })
-        #Handle results
-        r = t.result
-        @results.push(r) if r && r != EMPTY
+      
+      #Search existing threads for a completed one
+      @lock.synchronize do
+        while(t = @threads.pop)
+          r = t.result
+          @results.push(r) if r && r != EMPTY
 
-        if(t.process(&block))
-          return #block has been submitted to this worker
-        else 
-          #thread is dead, drop it from the list
+          if(t.process(args))
+            return #block has been submitted to this worker
+          else 
+            #thread is dead, drop it from the list
+          end
         end
       end
+
       #No workers were available, spawn one
-      unless(t) 
-        Worker.new(self, &block)
-      end
+      Worker.new(self, args, @block)
     end
     
     def result(timeout = nil)
@@ -72,46 +78,49 @@ module Warped
   class Worker < Thread
     attr_reader :pool, :result
     
-    # @working and @block are protected by @lock
-    def initialize(pool, &block)
+    # @working and @args is protected by @lock
+    def initialize(pool, args, block)
       @pool    = pool
-      @block   = block if(block_given?)
+      @block   = block
 
       @lock    = Mutex.new
       @cv      = ConditionVariable.new
       @working = true
       @result  = Pool::EMPTY
+
+      #Args of the first job to perform
+      @args    = args
+
       super do
         do_work
       end
     end
     
     def do_work
-      b = nil
       @lock.synchronize do
-        b = @block
-        unless(b)
+        unless(@args)
           @cv.wait(@lock, 10)
-          #We timed out
-          unless(b)
+
+          #We timed out if there's still no args
+          unless(@args)
             working = false
             return
           end
         end
       end
 
-      @result = b.call
+      @result = @block.call(*@args)
       pool.return_worker(self)
     end
     
     #
     # Returns true if queued, false if the thread is dying/dead
     #
-    def process(&b)
+    def process(args)
       @lock.synchronize do
         return false unless @working
         raise "Invalid!" if(@block)
-        @block = b
+        @args = args
         @cv.signal
       end
       true
