@@ -1,5 +1,5 @@
 
-module Warped::Pure
+module Warped
   class IO
     attr_reader :drive, :io, :type, :reqs
 
