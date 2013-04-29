@@ -28,13 +28,14 @@ module Warped
     end
     
     #
-    # Creates an async IO handle out of a Ruby ::IO
+    # Creates an async Warped::IO handle out of a Ruby ::IO
     #
     def from_io(io, type)
-      raise unless type == :pipe
       raise unless io.is_a?(::IO)
       
-      IO.new(self, io, type).tap { |io| handles.add(io) }
+      clazz = IO.const_get(type.to_s.capitalize)
+      
+      clazz.new(self, io, type).tap { |io| handles.add(io) }
     end
     
     def complete(timeout = nil)
