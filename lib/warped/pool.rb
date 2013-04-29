@@ -42,29 +42,31 @@ module Warped
     end
     
     def result(timeout = nil)
-      ret = @results.pop
-      return ret if ret
-      
-      #If there's nothing left on the results stack, try to get stuff from the @thread pool
-      @lock.synchronize do
-        begin #Retry point
-          @threads.reverse_each do |t|
-            tmp = t.result!
-            #If a thread result has already been emptied, all ones before it on the stack must have been as well
-            break if tmp == EMPTY
-            @results.push(tmp) if tmp
-          end
+      # Try to fill @results if there's nothing
+      if(@results.empty?)
+        #If there's nothing left on the results stack, try to get stuff from the @thread pool
+        @lock.synchronize do
+          begin #Retry point
+            @threads.reverse_each do |t|
+              tmp = t.result!
+              #If a thread result has already been emptied, all ones before it on the stack must have been as well
+              break if tmp == EMPTY
+              @results.push(tmp) if tmp
+            end
         
-          #If we still haven't found results, try waiting for them
-          if(@results.size == 0 && (!timeout || timeout > 0))
-            @cv.wait(@lock, timeout)
-            timeout = 0 #Makes un not wait upon retrying
-            redo
+            #If we still haven't found results, try waiting for them
+            if(@results.size == 0 && (!timeout || timeout > 0))
+              @cv.wait(@lock, timeout)
+              timeout = 0 #Makes un not wait upon retrying
+              redo
+            end
           end
         end
       end
-        
-      @results.pop #Maybe there's something there
+      
+      ret = @results.pop #There may be nothing, this will be then be nil
+      raise ret if ret.is_a? StandardError
+      ret
     end
     
     def return_worker(worker)
@@ -109,8 +111,14 @@ module Warped
         end
       end
 
-      @result = @block.call(*@args)
-      pool.return_worker(self)
+      begin
+        @result = @block.call(*@args)
+      rescue StandardError => e
+        @result = e
+      ensure
+        pool.return_worker(self)
+      end
+      @result
     end
     
     #
